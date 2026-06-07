@@ -33,12 +33,8 @@ LUMI_GPU_CPU_MAP = {
     6: [33, 34, 35, 36, 37, 38, 39], 7: [41, 42, 43, 44, 45, 46, 47],
 }
 
-# Backbone sub-module names in DensitySwinSaliency (v2 uses explicit stage splits)
-_BACKBONE_KEYS = {
-    "patch_embed", "pos_drop",
-    "stage0", "merge1", "stage1", "merge2", "stage2", "merge3", "stage3",
-    "norm",
-}
+# Backbone sub-module names in DensitySwinSaliency v1
+_BACKBONE_KEYS = {"patch_embed", "pos_drop", "encoder", "norm"}
 
 
 def parse_args():
@@ -58,6 +54,8 @@ def parse_args():
                    help="Freeze Swin backbone for this many epochs before fine-tuning")
     p.add_argument("--backbone-lr-scale", type=float, default=0.1,
                    help="Backbone LR multiplier after unfreezing (relative to --lr)")
+    p.add_argument("--early-stop-patience", type=int, default=0,
+                   help="Stop if val loss does not improve for this many epochs (0=disabled)")
     return p.parse_args()
 
 
@@ -81,30 +79,8 @@ def cc_loss(pred: torch.Tensor, gt: torch.Tensor) -> torch.Tensor:
     return (1.0 - num / denom).mean()
 
 
-def nss_loss(pred: torch.Tensor, fix: torch.Tensor) -> torch.Tensor:
-    """Negative NSS — minimising this term maximises NSS at fixation points."""
-    B = pred.shape[0]
-    # Cast to float32 for numerical stability under bfloat16 autocast
-    p = pred.float().view(B, -1)
-    f = fix.float().view(B, -1) > 0.5
-
-    mu    = p.mean(dim=1, keepdim=True)
-    sigma = p.std(dim=1, keepdim=True) + 1e-8
-    p_norm = (p - mu) / sigma                              # (B, N) normalised
-
-    fix_count      = f.sum(dim=1).clamp(min=1)            # (B,)
-    nss_per_sample = (p_norm * f).sum(dim=1) / fix_count  # (B,)
-
-    has_fix = f.any(dim=1)
-    if not has_fix.any():
-        return pred.sum() * 0.0   # differentiable zero when no fixations
-    return -nss_per_sample[has_fix].mean()
-
-
-def saliency_loss(
-    pred: torch.Tensor, gt: torch.Tensor, fix: torch.Tensor
-) -> torch.Tensor:
-    return kl_loss(pred, gt) + 0.2 * cc_loss(pred, gt) + 0.1 * nss_loss(pred, fix)
+def saliency_loss(pred: torch.Tensor, gt: torch.Tensor) -> torch.Tensor:
+    return kl_loss(pred, gt) + 0.2 * cc_loss(pred, gt)
 
 
 AUX_LOSS_WEIGHT = 0.1
@@ -113,23 +89,22 @@ AUX_LOSS_WEIGHT = 0.1
 def train_epoch(model, loader, optimizer, device, model_name, max_steps=None):
     model.train()
     total, count = 0.0, 0
-    for step, (frames, sals, fixes, density) in enumerate(loader):
+    for step, (frames, sals, _, density) in enumerate(loader):
         if max_steps is not None and step >= max_steps:
             break
         frames  = frames.to(device)
-        gt      = sals[:, sals.shape[1] // 2].to(device)   # middle frame saliency
-        fix     = fixes[:, fixes.shape[1] // 2].to(device)  # middle frame fixation
+        gt      = sals[:, sals.shape[1] // 2].to(device)
         density = density.to(device)
         optimizer.zero_grad()
         with autocast("cuda", dtype=torch.bfloat16):
             if model_name == "density_swin":
                 pred, logits = model(frames.permute(0, 2, 1, 3, 4), density)
-                loss = saliency_loss(pred, gt, fix) + AUX_LOSS_WEIGHT * F.cross_entropy(
+                loss = saliency_loss(pred, gt) + AUX_LOSS_WEIGHT * F.cross_entropy(
                     logits, density, ignore_index=-1
                 )
             else:
                 pred = model(frames.permute(0, 2, 1, 3, 4))
-                loss = saliency_loss(pred, gt, fix)
+                loss = saliency_loss(pred, gt)
         loss.backward()
         optimizer.step()
         total += loss.item()
@@ -141,20 +116,19 @@ def train_epoch(model, loader, optimizer, device, model_name, max_steps=None):
 def validate(model, loader, device, model_name):
     model.eval()
     total, count = 0.0, 0
-    for frames, sals, fixes, density in loader:
+    for frames, sals, _, density in loader:
         frames  = frames.to(device)
         gt      = sals[:, sals.shape[1] // 2].to(device)
-        fix     = fixes[:, fixes.shape[1] // 2].to(device)
         density = density.to(device)
         with autocast("cuda", dtype=torch.bfloat16):
             if model_name == "density_swin":
                 pred, logits = model(frames.permute(0, 2, 1, 3, 4), density)
-                loss = saliency_loss(pred, gt, fix) + AUX_LOSS_WEIGHT * F.cross_entropy(
+                loss = saliency_loss(pred, gt) + AUX_LOSS_WEIGHT * F.cross_entropy(
                     logits, density, ignore_index=-1
                 )
             else:
                 pred = model(frames.permute(0, 2, 1, 3, 4))
-                loss = saliency_loss(pred, gt, fix)
+                loss = saliency_loss(pred, gt)
             total += loss.item()
         count += 1
     t = torch.tensor([total, float(count)], dtype=torch.float64, device=device)
@@ -168,6 +142,15 @@ def main():
     dist.init_process_group(backend="nccl")
     local_rank = int(os.environ["LOCAL_RANK"])
     rank = int(os.environ["RANK"])
+
+    # Give each rank its own MIOpen cache dir on /tmp to avoid SQLite contention.
+    # Must be set before the first CUDA op so MIOpen picks it up on init.
+    for _var in ("MIOPEN_USER_DB_PATH", "MIOPEN_CUSTOM_CACHE_DIR"):
+        base = os.environ.get(_var, f"/tmp/miopen_{os.getenv('SLURM_JOB_ID', 'local')}")
+        per_rank = f"{base}_rank{local_rank}"
+        os.makedirs(per_rank, exist_ok=True)
+        os.environ[_var] = per_rank
+
     torch.cuda.set_device(local_rank)
     psutil.Process().cpu_affinity(LUMI_GPU_CPU_MAP[local_rank])
     device = torch.device("cuda", local_rank)
@@ -223,6 +206,7 @@ def main():
     model = DistributedDataParallel(model, device_ids=[local_rank])
 
     start_epoch, best_val = 0, float("inf")
+    no_improve = 0  # epochs since last val improvement
     ckpt_dir = Path(args.checkpoint_dir)
 
     if args.resume:
@@ -254,10 +238,16 @@ def main():
         val_loss   = validate(model, val_loader, device, args.model)
         scheduler.step()
 
+        improved = val_loss < best_val
+        if improved:
+            best_val  = val_loss
+            no_improve = 0
+        else:
+            no_improve += 1
+
         if rank == 0:
-            print(f"Epoch {epoch+1}/{args.epochs}  train={train_loss:.4f}  val={val_loss:.4f}")
-            if val_loss < best_val:
-                best_val = val_loss
+            print(f"Epoch {epoch+1}/{args.epochs}  train={train_loss:.4f}  val={val_loss:.4f}"
+                  + ("  *" if improved else ""))
             state = {
                 "epoch": epoch,
                 "model": model.module.state_dict(),
@@ -266,8 +256,19 @@ def main():
                 "best_val": best_val,
             }
             torch.save(state, ckpt_dir / "latest.pth")
-            if val_loss == best_val:
+            if improved:
                 torch.save(state, ckpt_dir / "best.pth")
+
+        # Broadcast early-stop decision from rank 0 to all ranks
+        stop = torch.tensor(
+            int(args.early_stop_patience > 0 and no_improve >= args.early_stop_patience),
+            device=device,
+        )
+        dist.broadcast(stop, src=0)
+        if stop.item():
+            if rank == 0:
+                print(f"Early stop: no improvement for {args.early_stop_patience} epochs.")
+            break
 
         if args.smoke_test:
             break
