@@ -22,6 +22,7 @@ from torch.utils.data.distributed import DistributedSampler
 from data.crowdfix_dataset import CrowdFixDataset, build_eval_transforms, build_train_transforms
 from models.density_swin_saliency import DensitySwinSaliency
 from models.tased_net import TASEDNet
+from models.three_branch_saliency import ThreeBranchSaliency
 from models.video_swin_saliency import VideoSwinSaliency
 
 # Each GCD maps to its nearest CPU cores on a LUMI-G node.
@@ -39,7 +40,7 @@ _BACKBONE_KEYS = {"patch_embed", "pos_drop", "encoder", "norm"}
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--model", choices=["tased", "swin", "density_swin"], default="swin")
+    p.add_argument("--model", choices=["tased", "swin", "density_swin", "three_branch"], default="swin")
     p.add_argument("--data-dir", required=True, help="Root of crowdfix-data/")
     p.add_argument("--splits", default="splits.json")
     p.add_argument("--checkpoint-dir", default="checkpoints")
@@ -97,7 +98,7 @@ def train_epoch(model, loader, optimizer, device, model_name, max_steps=None):
         density = density.to(device)
         optimizer.zero_grad()
         with autocast("cuda", dtype=torch.bfloat16):
-            if model_name == "density_swin":
+            if model_name in ("density_swin", "three_branch"):
                 pred, logits = model(frames.permute(0, 2, 1, 3, 4), density)
                 loss = saliency_loss(pred, gt) + AUX_LOSS_WEIGHT * F.cross_entropy(
                     logits, density, ignore_index=-1
@@ -121,7 +122,7 @@ def validate(model, loader, device, model_name):
         gt      = sals[:, sals.shape[1] // 2].to(device)
         density = density.to(device)
         with autocast("cuda", dtype=torch.bfloat16):
-            if model_name == "density_swin":
+            if model_name in ("density_swin", "three_branch"):
                 pred, logits = model(frames.permute(0, 2, 1, 3, 4), density)
                 loss = saliency_loss(pred, gt) + AUX_LOSS_WEIGHT * F.cross_entropy(
                     logits, density, ignore_index=-1
@@ -181,6 +182,8 @@ def main():
         model = TASEDNet()
     elif args.model == "density_swin":
         model = DensitySwinSaliency()
+    elif args.model == "three_branch":
+        model = ThreeBranchSaliency()
     else:
         model = VideoSwinSaliency()
     model = model.to(device)

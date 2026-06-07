@@ -20,6 +20,7 @@ from torch.utils.data import DataLoader
 from data.crowdfix_dataset import CrowdFixDataset, build_eval_transforms
 from models.density_swin_saliency import DensitySwinSaliency
 from models.tased_net import TASEDNet
+from models.three_branch_saliency import ThreeBranchSaliency
 from models.video_swin_saliency import VideoSwinSaliency
 from saliency_metrics import compute_all
 
@@ -31,7 +32,7 @@ def parse_args():
     p.add_argument("--checkpoint", required=True)
     p.add_argument("--data-dir", required=True)
     p.add_argument("--splits", default="splits.json")
-    p.add_argument("--model", choices=["tased", "swin", "density_swin"], default="swin")
+    p.add_argument("--model", choices=["tased", "swin", "density_swin", "three_branch"], default="swin")
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--clip-len", type=int, default=8)
     p.add_argument("--frame-size", nargs=2, type=int, default=[224, 384])
@@ -52,7 +53,7 @@ def run_evaluation(model, loader, device, model_name):
         gt_fix = fixes[:, mid].cpu().float().numpy()   # (B, 1, H, W)
 
         with autocast("cuda", dtype=torch.bfloat16):
-            if model_name == "density_swin":
+            if model_name in ("density_swin", "three_branch"):
                 pred_t, _ = model(frames.permute(0, 2, 1, 3, 4), density)
             else:
                 pred_t = model(frames.permute(0, 2, 1, 3, 4))
@@ -122,6 +123,8 @@ def main():
         model = TASEDNet()
     elif args.model == "density_swin":
         model = DensitySwinSaliency(pretrained=False)
+    elif args.model == "three_branch":
+        model = ThreeBranchSaliency(pretrained=False)
     else:
         model = VideoSwinSaliency(pretrained=False)
 
