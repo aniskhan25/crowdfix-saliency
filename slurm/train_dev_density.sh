@@ -31,8 +31,8 @@ mkdir -p logs checkpoints
 
 export NCCL_SOCKET_IFNAME=hsn0,hsn1,hsn2,hsn3
 export NCCL_NET_GDR_LEVEL=PHB
-export MIOPEN_USER_DB_PATH=/tmp
-export MIOPEN_CUSTOM_CACHE_DIR=/tmp
+export MIOPEN_USER_DB_PATH="/tmp/${USER}_${SLURM_JOB_ID}"
+export MIOPEN_CUSTOM_CACHE_DIR="/tmp/${USER}_${SLURM_JOB_ID}"
 export TORCH_HOME="${SCRATCH}/.torch_hub"
 
 time srun singularity exec -B "$SQSH_PATH":/user-software:image-src=/ "$CONTAINER" \
