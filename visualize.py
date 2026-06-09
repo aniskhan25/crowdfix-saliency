@@ -23,7 +23,10 @@ from PIL import Image
 from data.crowdfix_dataset import build_eval_transforms
 from models.density_swin_saliency import DensitySwinSaliency
 from models.tased_net import TASEDNet
+from models.three_branch_saliency import ThreeBranchSaliency
 from models.video_swin_saliency import VideoSwinSaliency
+
+_DENSITY_MODELS = {"density_swin", "three_branch"}
 
 
 def to_heatmap_overlay(frame_rgb: np.ndarray, sal_map: np.ndarray, alpha: float = 0.5) -> np.ndarray:
@@ -35,14 +38,14 @@ def to_heatmap_overlay(frame_rgb: np.ndarray, sal_map: np.ndarray, alpha: float 
 
 
 @torch.no_grad()
-def predict_all(model, frame_paths, clip_len, frame_size, device, density_label=0):
+def predict_all(model, model_name, frame_paths, clip_len, frame_size, device, density_label=0):
     """Run inference for every frame using a clip centred on that frame."""
     transform = build_eval_transforms(frame_size)
     pil_frames = [Image.open(p).convert("RGB") for p in frame_paths]
     blank = Image.new("L", pil_frames[0].size)
     half = clip_len // 2
     n = len(pil_frames)
-    is_density_model = isinstance(model, DensitySwinSaliency)
+    is_density_model = model_name in _DENSITY_MODELS
     density_t = torch.tensor([density_label], dtype=torch.long, device=device)
     preds = []
     for i in range(n):
@@ -63,7 +66,7 @@ def parse_args():
     p.add_argument("--checkpoint", required=True)
     p.add_argument("--data-dir", required=True)
     p.add_argument("--video-id", required=True)
-    p.add_argument("--model", choices=["tased", "swin", "density_swin"], default="swin")
+    p.add_argument("--model", choices=["tased", "swin", "density_swin", "three_branch"], default="density_swin")
     p.add_argument("--density", type=int, default=0, choices=[0, 1, 2],
                    help="Density label for density_swin: 0=SP, 1=DF, 2=DC")
     p.add_argument("--out", default="results")
@@ -86,6 +89,8 @@ def main():
         model = TASEDNet()
     elif args.model == "density_swin":
         model = DensitySwinSaliency(pretrained=False)
+    elif args.model == "three_branch":
+        model = ThreeBranchSaliency(pretrained=False)
     else:
         model = VideoSwinSaliency(pretrained=False)
     ckpt = torch.load(args.checkpoint, map_location=device)
@@ -99,7 +104,7 @@ def main():
         raise SystemExit(f"No frames found in {frame_dir}")
 
     print(f"Running inference on {len(frame_paths)} frames of '{args.video_id}'...")
-    preds = predict_all(model, frame_paths, args.clip_len, frame_size, device, args.density)
+    preds = predict_all(model, args.model, frame_paths, args.clip_len, frame_size, device, args.density)
 
     h, w = frame_size
     panels = []
