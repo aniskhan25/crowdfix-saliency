@@ -792,30 +792,33 @@ hyperparameters; they differ only in what is added beyond the baseline.
   \footnotesize
   \caption{%
     Ablation study on the CrowdFix test set (single seed, seed~42).
-    $\Delta$NSS is measured relative to the VideoSwin baseline.
+    $\Delta$NSS: gain over VideoSwin baseline (standard evaluation).
+    $\Delta$NSS$_\text{deb}$: gain over debiased VideoSwin (NSS\,0.726);
+    ``--'' where debiased eval was not run.
     The ``+Density FiLM'' row reports seed~42 values; Table~\ref{tab:sota}
-    reports mean\,$\pm$\,std over 4 seeds.  \textbf{Bold}: best.
+    reports mean\,$\pm$\,std over 4 seeds.  \textbf{Bold}: best standard NSS.
   }
   \resizebox{\columnwidth}{!}{%
-  \begin{tabular}{lcccc}
+  \begin{tabular}{lccccc}
     \toprule
     \textsc{Variant}
       & \textsc{AUC-J}
       & \textsc{NSS}
       & \textsc{CC}
-      & $\Delta$\textsc{NSS} \\
+      & $\Delta$\textsc{NSS}
+      & $\Delta$\textsc{NSS}$_\text{deb}$ \\
     \midrule
     VideoSwin (baseline)
-      & 0.806 & 1.313 & 0.476 & -- \\
+      & 0.806 & 1.313 & 0.476 & -- & -- \\
     +~Density FiLM (\textbf{ours})
-      & \textbf{0.820} & \textbf{1.437} & \textbf{0.517} & $+$0.124 \\
+      & \textbf{0.820} & \textbf{1.437} & \textbf{0.517} & $+$0.124 & $+$0.462 \\
     \midrule
     +~One-hot density code (no FiLM)
-      & 0.819 & 1.424 & 0.514 & $+$0.111 \\
+      & 0.819 & 1.424 & 0.514 & $+$0.111 & $+$0.345 \\
     +~Optical flow (RAFT)
-      & 0.820 & 1.437 & 0.517 & $+$0.124 \\
+      & 0.820 & 1.437 & 0.517 & $+$0.124 & -- \\
     +~3D decoder + social prior
-      & 0.808 & 1.313 & 0.477 & $\pm$0.000 \\
+      & 0.808 & 1.313 & 0.477 & $\pm$0.000 & -- \\
     \bottomrule
   \end{tabular}}
   \label{tab:ablation}
@@ -843,23 +846,28 @@ one-hot bias (2,304 parameters vs.\ 100K for FiLM).
 
 The one-hot model achieves NSS\,1.424, AUC-J\,0.819, CC\,0.514
 (Table~\ref{tab:ablation}), versus \ourmodel's NSS\,1.437, AUC-J\,0.820,
-CC\,0.517 (seed~42).  Two findings follow.  First, the conditioning
-\emph{signal} is the primary driver: the one-hot model captures
-$\Delta$NSS\,=\,$+0.111$ of FiLM's $+0.124$ total gain over the unconditioned
-backbone (89\% of the improvement).  Second, the FiLM \emph{mechanism}
-provides a real but modest additional benefit: $+0.013$ NSS
+CC\,0.517 (seed~42).  Two findings follow from standard evaluation.
+First, the conditioning \emph{signal} is the primary driver: the one-hot model
+captures $\Delta$NSS\,=\,$+0.111$ of FiLM's $+0.124$ total gain (89\%).
+Second, the FiLM \emph{mechanism} adds $+0.013$ NSS
 (${\approx}1.9\times$ the per-seed standard deviation of $0.007$),
-attributable to the 64-dim embedding geometry and the multiplicative
-$\gamma$ pathway enabling class-specific \emph{scaling} rather than mere additive
-shifting.  This $+0.013$ NSS advantage corresponds to ${\approx}1.9$
-seed standard deviations and should be read as indicative rather than
-definitive at conventional significance thresholds; the near-orthogonal
-$\gamma$ geometry (Section~\ref{sec:film_analysis}) provides
-geometrically independent support that FiLM learns genuinely distinct
-class-specific representations beyond what an additive bias achieves.
-Together these results confirm that crowd density is a genuine
-conditioning variable, and that the richer FiLM parameterisation
-extracts slightly more signal than a direct one-hot bias.
+a difference that is indicative but not definitive at conventional
+significance thresholds; the near-orthogonal $\gamma$ geometry
+(Section~\ref{sec:film_analysis}) provides geometrically independent support.
+
+Debiased evaluation substantially sharpens this picture
+(Table~\ref{tab:ablation}, $\Delta$NSS$_\text{deb}$ column).
+The one-hot model's debiased NSS is 1.071 ($\Delta$NSS$_\text{deb}$\,=\,$+0.345$
+over debiased VideoSwin 0.726), while \ourmodel{} reaches 1.188
+($\Delta$NSS$_\text{deb}$\,=\,$+0.462$).  The FiLM advantage over one-hot
+grows from $+0.013$ standard to $+0.117$ debiased---a $9\times$ amplification.
+An additive one-hot bias shifts all bottleneck channels uniformly in a
+class-specific direction; FiLM's multiplicative $\gamma$ pathway independently
+scales each channel, allowing it to amplify channels that encode crowd-specific
+features while suppressing channels that encode the centre prior.
+This asymmetric channel-level control is precisely what survives the removal
+of the shared centre-prior, explaining why the FiLM mechanism advantage is
+far more visible after debiasing.
 
 \mypar{RAFT optical flow is redundant.}
 Appending RAFT~\citep{raft} dense optical flow as a second input stream,
