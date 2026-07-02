@@ -20,8 +20,10 @@ from PIL import Image
 import torchvision.transforms.functional as TF
 
 from data.crowdfix_dataset import CrowdFixDataset, build_eval_transforms
+from models.density_swin_multiscale import DensitySwinMultiscale
 from models.density_swin_onehot import DensitySwinOneHot
 from models.density_swin_saliency import DensitySwinSaliency
+from models.density_swin_soft import DensitySwinSoft
 from models.tased_net import TASEDNet
 from models.three_branch_saliency import ThreeBranchSaliency
 from models.video_swin_saliency import VideoSwinSaliency
@@ -35,7 +37,7 @@ def parse_args():
     p.add_argument("--checkpoint", required=True)
     p.add_argument("--data-dir", required=True)
     p.add_argument("--splits", default="splits.json")
-    p.add_argument("--model", choices=["tased", "swin", "density_swin", "density_swin_onehot", "three_branch"], default="swin")
+    p.add_argument("--model", choices=["tased", "swin", "density_swin", "density_swin_onehot", "density_swin_soft", "density_swin_multiscale", "three_branch"], default="swin")
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--clip-len", type=int, default=8)
     p.add_argument("--frame-size", nargs=2, type=int, default=[224, 384])
@@ -102,7 +104,7 @@ def run_evaluation(
     overall = defaultdict(list)
     per_cat: dict[int, defaultdict] = {i: defaultdict(list) for i in range(3)}
     clip_records: list[dict] = []
-    uses_density = model_name in ("density_swin", "density_swin_onehot", "three_branch")
+    uses_density = model_name in ("density_swin", "density_swin_onehot", "density_swin_soft", "density_swin_multiscale", "three_branch")
 
     for frames, sals, fixes, density in loader:
         frames  = frames.to(device)
@@ -212,6 +214,10 @@ def main():
             model = DensitySwinSaliency(pretrained=False)
         elif args.model == "density_swin_onehot":
             model = DensitySwinOneHot(pretrained=False)
+        elif args.model == "density_swin_soft":
+            model = DensitySwinSoft(pretrained=False)
+        elif args.model == "density_swin_multiscale":
+            model = DensitySwinMultiscale(pretrained=False)
         elif args.model == "three_branch":
             model = ThreeBranchSaliency(pretrained=False)
         else:

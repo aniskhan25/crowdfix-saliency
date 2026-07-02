@@ -8,8 +8,10 @@ Launch:
 import os
 import argparse
 import json
+import random
 from pathlib import Path
 
+import numpy as np
 import psutil
 import torch
 import torch.distributed as dist
@@ -20,7 +22,10 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
 from data.crowdfix_dataset import CrowdFixDataset, build_eval_transforms, build_train_transforms
+from models.density_swin_multiscale import DensitySwinMultiscale
+from models.density_swin_onehot import DensitySwinOneHot
 from models.density_swin_saliency import DensitySwinSaliency
+from models.density_swin_soft import DensitySwinSoft
 from models.tased_net import TASEDNet
 from models.three_branch_saliency import ThreeBranchSaliency
 from models.video_swin_saliency import VideoSwinSaliency
@@ -40,7 +45,7 @@ _BACKBONE_KEYS = {"patch_embed", "pos_drop", "encoder", "norm"}
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--model", choices=["tased", "swin", "density_swin", "three_branch"], default="swin")
+    p.add_argument("--model", choices=["tased", "swin", "density_swin", "density_swin_onehot", "three_branch", "density_swin_soft", "density_swin_multiscale"], default="swin")
     p.add_argument("--data-dir", required=True, help="Root of crowdfix-data/")
     p.add_argument("--splits", default="splits.json")
     p.add_argument("--checkpoint-dir", default="checkpoints")
@@ -57,6 +62,8 @@ def parse_args():
                    help="Backbone LR multiplier after unfreezing (relative to --lr)")
     p.add_argument("--early-stop-patience", type=int, default=0,
                    help="Stop if val loss does not improve for this many epochs (0=disabled)")
+    p.add_argument("--seed", type=int, default=42,
+                   help="Global RNG seed for reproducibility across training runs")
     return p.parse_args()
 
 
@@ -98,7 +105,7 @@ def train_epoch(model, loader, optimizer, device, model_name, max_steps=None):
         density = density.to(device)
         optimizer.zero_grad()
         with autocast("cuda", dtype=torch.bfloat16):
-            if model_name in ("density_swin", "three_branch"):
+            if model_name in ("density_swin", "density_swin_onehot", "three_branch", "density_swin_soft", "density_swin_multiscale"):
                 pred, logits = model(frames.permute(0, 2, 1, 3, 4), density)
                 loss = saliency_loss(pred, gt) + AUX_LOSS_WEIGHT * F.cross_entropy(
                     logits, density, ignore_index=-1
@@ -122,7 +129,7 @@ def validate(model, loader, device, model_name):
         gt      = sals[:, sals.shape[1] // 2].to(device)
         density = density.to(device)
         with autocast("cuda", dtype=torch.bfloat16):
-            if model_name in ("density_swin", "three_branch"):
+            if model_name in ("density_swin", "density_swin_onehot", "three_branch", "density_swin_soft", "density_swin_multiscale"):
                 pred, logits = model(frames.permute(0, 2, 1, 3, 4), density)
                 loss = saliency_loss(pred, gt) + AUX_LOSS_WEIGHT * F.cross_entropy(
                     logits, density, ignore_index=-1
@@ -139,6 +146,12 @@ def validate(model, loader, device, model_name):
 
 def main():
     args = parse_args()
+
+    # Seed all RNGs before any CUDA or data operations so runs are reproducible
+    # and comparable across seeds for variance estimation.
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    random.seed(args.seed)
 
     dist.init_process_group(backend="nccl")
     local_rank = int(os.environ["LOCAL_RANK"])
@@ -182,6 +195,12 @@ def main():
         model = TASEDNet()
     elif args.model == "density_swin":
         model = DensitySwinSaliency()
+    elif args.model == "density_swin_onehot":
+        model = DensitySwinOneHot()
+    elif args.model == "density_swin_soft":
+        model = DensitySwinSoft()
+    elif args.model == "density_swin_multiscale":
+        model = DensitySwinMultiscale()
     elif args.model == "three_branch":
         model = ThreeBranchSaliency()
     else:
