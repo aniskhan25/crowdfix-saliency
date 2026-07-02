@@ -73,6 +73,12 @@ shifted-window attention renders explicit optical flow redundant; the
 collapses NSS to effectively the unconditioned baseline ($\approx$1.313),
 demonstrating that 3,189 training clips fall firmly in the
 regularisation-dominated regime.
+Debiased evaluation---subtracting the mean training fixation density from
+predictions to remove shared centre-prior alignment---reveals that the
+unconditioned backbone loses 45\% of its NSS while \ourmodel{} loses only
+17\%, yielding a debiased conditioning gain of $\Delta\mathrm{NSS}\!=\!+0.462$
+($3.7\!\times$ the standard gain): density conditioning replaces centre-prior
+exploitation with crowd-content-responsive predictions.
 These results articulate a general design principle: in constrained
 crowd-video data regimes, targeted inductive bias via lightweight conditional
 bottleneck modulation is strictly superior to generic capacity scaling.
@@ -648,13 +654,16 @@ Table~\ref{tab:sota} reports overall test-set performance for all methods.
     Comparison with prior work on the CrowdFix test set (5,356 clips).
     2019 baseline results from~\citep{aclnet};
     SAM/DeepVS NSS and CC from the same benchmark log.
-    ``--'': metric not reported in the original publication.
-    \textbf{Bold (mean)}: best per column; \underline{underline}: second best.
+    ``--'': metric not reported or not applicable.
+    \textbf{Bold (mean)}: best standard-eval column; \underline{underline}: second best.
     Oracle label row reports mean\,$\pm$\,std across 4 random seeds
     (seeds 0, 1, 2, and 42).
-    $\dagger$: pred.\ label row is a single-seed oracle--parity check (seed~42);
-    the two rows differ by $\leq\!0.001$ on every metric, confirming the oracle
-    dependency does not affect deployment performance.
+    $\dagger$: pred.\ label row is a single-seed oracle--parity check (seed~42).
+    $\S$: Centre-bias upper bound predicts the mean training fixation density
+    for every test sample (no learned model).
+    $\ddagger$: Debiased = mean training fixation density subtracted from model
+    predictions before metric computation; KL/SIM omitted as they require
+    non-negative distributions.
   }
   \resizebox{\textwidth}{!}{%
   \begin{tabular}{lcccccc}
@@ -683,6 +692,14 @@ Table~\ref{tab:sota} reports overall test-set performance for all methods.
     \ourmodel{} (pred.\ label)$^\dagger$
       & 0.821 & 0.825 & 1.438
       & 0.518 & 1.067 & 0.451 \\
+    \midrule
+    \multicolumn{7}{l}{\small\textit{Centre-bias analysis (seed~42)}} \\[2pt]
+    Centre-bias upper bound$^\S$
+      & 0.831 & 0.835 & 1.557 & 0.556 & 0.999 & 0.464 \\
+    VideoSwin (debiased$^\ddagger$)
+      & 0.669 & 0.671 & 0.726 & 0.270 & -- & -- \\
+    \ourmodel{} (ours, debiased$^\ddagger$)
+      & 0.765 & 0.769 & 1.188 & 0.431 & -- & -- \\
     \bottomrule
   \end{tabular}}
   \label{tab:sota}
@@ -730,6 +747,37 @@ temporally-resolved motion patterns that directly predict where observers
 fixate, rather than only which areas are more salient than others in a
 coarse sense.  The addition of FiLM conditioning then provides the precision
 gains on top of this strong backbone foundation.
+
+\mypar{Debiased evaluation reveals the true conditioning gain.}
+Standard saliency metrics conflate crowd-content-responsive predictions with
+centre-prior alignment: if a model learns to predict a fixed central blob
+(matching the dataset's overall fixation tendency), it will score well on
+NSS and AUC-J regardless of whether it understands crowd structure.
+To isolate genuine crowd-specific contributions, we subtract the mean
+training-set fixation density from all model predictions before computing
+metrics (Table~\ref{tab:sota}, lower panel; Section~\ref{sec:sota}).
+
+The centre-bias upper bound---predicting the mean training fixation density
+for every test sample, with no model---achieves NSS\,1.557, exceeding both
+VideoSwin (1.313) and \ourmodel{} (1.437) in standard evaluation.
+This establishes that a substantial portion of all learned models' NSS
+reflects centre-prior alignment rather than crowd-content understanding.
+
+Under debiased evaluation the picture inverts dramatically.
+VideoSwin's NSS collapses from 1.313 to 0.726, a 45\% loss: the
+unconditioned Kinetics-pretrained backbone is heavily centre-biased, and
+once the shared prior is subtracted, its crowd-specific predictions are weak.
+\ourmodel{} drops from 1.437 to 1.188, a 17\% loss, because density
+conditioning steers the bottleneck toward crowd-category-specific features
+that are largely independent of the centre prior.
+The result is a \emph{debiased conditioning gain} of
+$\Delta\mathrm{NSS}\!=\!+0.462$ ($1.188 - 0.726$), which is
+$3.7\!\times$ the standard gain of $+0.124$.
+
+This finding reframes the contribution: density conditioning at the
+bottleneck does not merely add precision on top of a centre-biased
+backbone---it replaces the backbone's reliance on the centre prior with
+predictions that are responsive to crowd density structure.
 
 \subsection{Ablation Study}
 \label{sec:ablation}
@@ -1060,11 +1108,22 @@ prediction.  The central claim of this work---that crowd density induces
 categorical fixation regime shifts that require explicit conditioning to
 model accurately---is supported by a consistent body of evidence: the FiLM
 module's $\approx$100K parameters improve NSS by $+9.2\%$ and CC by $+8.6\%$
-over the unconditioned backbone, while three progressively more complex
-extensions all fail to improve, with the most complex variant collapsing NSS
-precisely to baseline.  The result is a new state of the art on CrowdFix
+over the unconditioned backbone in standard evaluation, while three
+progressively more complex extensions all fail to improve, with the most
+complex variant collapsing NSS precisely to baseline.  The result is a new
+state of the art on CrowdFix
 (AUC-J\,$0.820\pm0.001$, NSS\,$1.434\pm0.007$, CC\,$0.517\pm0.003$, mean over 4~seeds),
 representing the first published improvement over ACL-Net (2019) in six years.
+
+Debiased evaluation strengthens this conclusion.  Subtracting the mean
+training fixation density from all predictions to remove shared centre-prior
+alignment reveals that the unconditioned VideoSwin backbone loses 45\% of
+its NSS ($1.313\to0.726$) while \ourmodel{} loses only 17\%
+($1.437\to1.188$), yielding a debiased conditioning gain of
+$\Delta\mathrm{NSS}\!=\!+0.462$---$3.7\!\times$ the standard gain.
+Density conditioning does not merely sharpen an already centre-biased
+response; it replaces centre-prior exploitation with crowd-category-specific
+feature activation that survives the removal of the shared prior.
 
 The quantitative characterisation of the capacity--regularisation boundary
 on CrowdFix has broader implications.  The precise NSS collapse
@@ -1104,18 +1163,18 @@ Second, \textbf{single-dataset scope}: all results are on CrowdFix.
 Whether the density-conditioned bottleneck generalises to other crowd
 video collections (e.g.\ crowd scenes in DHF1K or Hollywood-2) has not
 been tested.
-Third, \textbf{residual centre bias}: the VideoSwin encoder inherits a
-centre-biased prior from Kinetics-400 pretraining, and the CrowdFix
-fixation maps exhibit a corresponding centre tendency.  Challenging frames
-in the qualitative analysis (Figure~\ref{fig:qualitative}) confirm this
-is the primary remaining failure mode: in all three negative-NSS examples
-the model predicts a central saliency peak while observers fixated an
-off-centre target.  The NSS values reported in this paper therefore
-conflate density-conditioning benefit with shared centre-prior
-exploitation.  A debiased NSS analysis---subtracting the mean
-training-set fixation density from all predictions before metric
-computation---is required to isolate the two contributions and is
-planned as the next evaluation step.
+Third, \textbf{centre bias and debiased evaluation}: the VideoSwin encoder
+inherits a centre-biased prior from Kinetics-400 pretraining, and the
+CrowdFix fixation maps exhibit a corresponding centre tendency
+(negative-NSS examples in Figure~\ref{fig:qualitative} are all off-centre
+misses).  Standard metrics therefore conflate crowd-content-responsive
+predictions with centre-prior alignment.  Debiased evaluation
+(Section~\ref{sec:sota}) reveals that this conflation favours the
+unconditioned backbone more than it favours \ourmodel{}: VideoSwin loses
+45\% of its NSS under debiasing (1.313~$\to$~0.726) while \ourmodel{} loses
+only 17\% (1.437~$\to$~1.188).  The centre-bias upper bound (NSS\,1.557)
+sets a ceiling no learned model has yet exceeded, representing an open
+challenge for future work on bias-corrected crowd video saliency.
 
 \section*{Acknowledgements}
 
