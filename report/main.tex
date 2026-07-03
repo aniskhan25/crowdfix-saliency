@@ -797,6 +797,9 @@ hyperparameters; they differ only in what is added beyond the baseline.
     ``--'' where debiased eval was not run.
     The ``+Density FiLM'' row reports seed~42 values; Table~\ref{tab:sota}
     reports mean\,$\pm$\,std over 4 seeds.  \textbf{Bold}: best standard NSS.
+    The bottom panel (Soft FiLM; Multiscale FiLM) reports Phase~2 variants
+    that explore conditioning without GT labels at inference and multi-scale
+    injection, respectively.
   }
   \resizebox{\columnwidth}{!}{%
   \begin{tabular}{lccccc}
@@ -819,6 +822,11 @@ hyperparameters; they differ only in what is added beyond the baseline.
       & 0.820 & 1.437 & 0.517 & $+$0.124 & -- \\
     +~3D decoder + social prior
       & 0.808 & 1.313 & 0.477 & $\pm$0.000 & -- \\
+    \midrule
+    +~Soft FiLM (self-sup.\ at inference)
+      & 0.820 & 1.424 & 0.514 & $+$0.111 & $+$0.446 \\
+    +~Multiscale FiLM (strides 32/16/8/4)
+      & 0.819 & 1.412 & 0.512 & $+$0.099 & $+$0.405 \\
     \bottomrule
   \end{tabular}}
   \label{tab:ablation}
@@ -868,6 +876,34 @@ features while suppressing channels that encode the centre prior.
 This asymmetric channel-level control is precisely what survives the removal
 of the shared centre-prior, explaining why the FiLM mechanism advantage is
 far more visible after debiasing.
+
+\mypar{Soft FiLM: self-supervised conditioning closes the gap.}
+Rather than conditioning on GT density labels, the Soft FiLM variant derives
+its conditioning signal from the model's own density head via
+$\tilde{\mathbf{e}} = \text{softmax}(\hat{\mathbf{z}}_\text{det}) \mathbf{W}_\text{emb}$,
+where $\hat{\mathbf{z}}_\text{det}$ are stop-gradient logits and
+$\mathbf{W}_\text{emb}$ is the embedding weight matrix.
+This enables continuous interpolation between the three density embeddings
+and removes the GT label requirement at inference entirely.
+Soft FiLM achieves NSS\,1.424, AUC-J\,0.820, CC\,0.514
+($\Delta$NSS$_\text{deb}$\,=\,$+0.446$)---only $-0.016$ NSS below the oracle-label
+\ourmodel{} ($+0.462$ debiased).  The near-identical debiased gain
+demonstrates that the conditioning benefit comes primarily from the density
+\emph{representation} in the embedding space, not from oracle-label precision.
+Since Soft FiLM is fully self-supervised at inference, it is the preferred
+deployment variant when GT crowd density labels are unavailable.
+
+\mypar{Multiscale FiLM: bottleneck injection is the optimal point.}
+Extending density conditioning to all four decoder stages (strides 32, 16, 8, 4)
+with independent per-scale FiLM projections (zero-initialised to preserve
+training stability) yields NSS\,1.412, AUC-J\,0.819
+($\Delta$NSS$_\text{deb}$\,=\,$+0.405$)---weaker than both single-bottleneck
+variants.  This result confirms that the bottleneck is already the optimal
+conditioning injection point.  By the time features enter the decoder,
+density-specific routing has already been established by the bottleneck FiLM;
+applying further modulation at finer scales adds degrees of freedom that the
+available training data cannot support, consistent with the variance--bias
+analysis for the three-branch ablation below.
 
 \mypar{RAFT optical flow is redundant.}
 Appending RAFT~\citep{raft} dense optical flow as a second input stream,
