@@ -22,6 +22,8 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
 from data.crowdfix_dataset import CrowdFixDataset, build_eval_transforms, build_train_transforms
+from data.dhf1k_dataset import DHF1KDataset
+from models.density_swin_continuous import DensitySwinContinuous
 from models.density_swin_multiscale import DensitySwinMultiscale
 from models.density_swin_onehot import DensitySwinOneHot
 from models.density_swin_saliency import DensitySwinSaliency
@@ -45,7 +47,7 @@ _BACKBONE_KEYS = {"patch_embed", "pos_drop", "encoder", "norm"}
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--model", choices=["tased", "swin", "density_swin", "density_swin_onehot", "three_branch", "density_swin_soft", "density_swin_multiscale"], default="swin")
+    p.add_argument("--model", choices=["tased", "swin", "density_swin", "density_swin_onehot", "three_branch", "density_swin_soft", "density_swin_multiscale", "density_swin_continuous"], default="swin")
     p.add_argument("--data-dir", required=True, help="Root of crowdfix-data/")
     p.add_argument("--splits", default="splits.json")
     p.add_argument("--checkpoint-dir", default="checkpoints")
@@ -64,6 +66,13 @@ def parse_args():
                    help="Stop if val loss does not improve for this many epochs (0=disabled)")
     p.add_argument("--seed", type=int, default=42,
                    help="Global RNG seed for reproducibility across training runs")
+    p.add_argument("--dataset", choices=["crowdfix", "dhf1k"], default="crowdfix",
+                   help="Training dataset (dhf1k for pretraining, crowdfix for full training)")
+    p.add_argument("--dhf1k-dir", default=None,
+                   help="Root of DHF1K data (required when --dataset dhf1k)")
+    p.add_argument("--init-from", default=None,
+                   help="Checkpoint for partial weight init (strict=False). Use to transfer "
+                        "pretrained VideoSwin weights into a density model.")
     return p.parse_args()
 
 
@@ -105,7 +114,7 @@ def train_epoch(model, loader, optimizer, device, model_name, max_steps=None):
         density = density.to(device)
         optimizer.zero_grad()
         with autocast("cuda", dtype=torch.bfloat16):
-            if model_name in ("density_swin", "density_swin_onehot", "three_branch", "density_swin_soft", "density_swin_multiscale"):
+            if model_name in ("density_swin", "density_swin_onehot", "three_branch", "density_swin_soft", "density_swin_multiscale", "density_swin_continuous"):
                 pred, logits = model(frames.permute(0, 2, 1, 3, 4), density)
                 loss = saliency_loss(pred, gt) + AUX_LOSS_WEIGHT * F.cross_entropy(
                     logits, density, ignore_index=-1
@@ -129,7 +138,7 @@ def validate(model, loader, device, model_name):
         gt      = sals[:, sals.shape[1] // 2].to(device)
         density = density.to(device)
         with autocast("cuda", dtype=torch.bfloat16):
-            if model_name in ("density_swin", "density_swin_onehot", "three_branch", "density_swin_soft", "density_swin_multiscale"):
+            if model_name in ("density_swin", "density_swin_onehot", "three_branch", "density_swin_soft", "density_swin_multiscale", "density_swin_continuous"):
                 pred, logits = model(frames.permute(0, 2, 1, 3, 4), density)
                 loss = saliency_loss(pred, gt) + AUX_LOSS_WEIGHT * F.cross_entropy(
                     logits, density, ignore_index=-1
@@ -169,19 +178,28 @@ def main():
     psutil.Process().cpu_affinity(LUMI_GPU_CPU_MAP[local_rank])
     device = torch.device("cuda", local_rank)
 
-    with open(args.splits) as f:
-        splits = json.load(f)
-
-    categories = splits.get("categories", {})
     frame_size = tuple(args.frame_size)
-    train_ds = CrowdFixDataset(
-        args.data_dir, splits["train"], clip_len=args.clip_len,
-        transform=build_train_transforms(frame_size), categories=categories,
-    )
-    val_ds = CrowdFixDataset(
-        args.data_dir, splits["val"], clip_len=args.clip_len,
-        transform=build_eval_transforms(frame_size), categories=categories,
-    )
+    if args.dataset == "dhf1k":
+        if not args.dhf1k_dir:
+            raise ValueError("--dhf1k-dir is required when --dataset dhf1k")
+        train_ds = DHF1KDataset(args.dhf1k_dir, split="training",
+                                clip_len=args.clip_len,
+                                transform=build_train_transforms(frame_size))
+        val_ds   = DHF1KDataset(args.dhf1k_dir, split="validation",
+                                clip_len=args.clip_len,
+                                transform=build_eval_transforms(frame_size))
+    else:
+        with open(args.splits) as f:
+            splits = json.load(f)
+        categories = splits.get("categories", {})
+        train_ds = CrowdFixDataset(
+            args.data_dir, splits["train"], clip_len=args.clip_len,
+            transform=build_train_transforms(frame_size), categories=categories,
+        )
+        val_ds = CrowdFixDataset(
+            args.data_dir, splits["val"], clip_len=args.clip_len,
+            transform=build_eval_transforms(frame_size), categories=categories,
+        )
     train_loader = DataLoader(
         train_ds, sampler=DistributedSampler(train_ds),
         batch_size=args.batch_size, num_workers=7, pin_memory=True, drop_last=True,
@@ -201,10 +219,20 @@ def main():
         model = DensitySwinSoft()
     elif args.model == "density_swin_multiscale":
         model = DensitySwinMultiscale()
+    elif args.model == "density_swin_continuous":
+        model = DensitySwinContinuous()
     elif args.model == "three_branch":
         model = ThreeBranchSaliency()
     else:
         model = VideoSwinSaliency()
+
+    if args.init_from:
+        ckpt = torch.load(args.init_from, map_location="cpu")
+        missing, unexpected = model.load_state_dict(ckpt["model"], strict=False)
+        if rank == 0:
+            print(f"Loaded init weights from {args.init_from} "
+                  f"(missing={len(missing)}, unexpected={len(unexpected)})")
+
     model = model.to(device)
 
     # Split backbone vs head for differential LR
