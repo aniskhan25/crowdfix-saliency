@@ -827,6 +827,8 @@ hyperparameters; they differ only in what is added beyond the baseline.
       & 0.820 & 1.424 & 0.514 & $+$0.111 & $+$0.446 \\
     +~Multiscale FiLM (strides 32/16/8/4)
       & 0.819 & 1.412 & 0.512 & $+$0.099 & $+$0.405 \\
+    +~Continuous (VGG16 features, no GT label)
+      & \textbf{0.821} & \textbf{1.441} & \textbf{0.520} & $+$0.128 & $+$0.416 \\
     \bottomrule
   \end{tabular}}
   \label{tab:ablation}
@@ -904,6 +906,26 @@ density-specific routing has already been established by the bottleneck FiLM;
 applying further modulation at finer scales adds degrees of freedom that the
 available training data cannot support, consistent with the variance--bias
 analysis for the three-branch ablation below.
+
+\mypar{Continuous VGG16 conditioning: highest oracle NSS, but learned embedding separates density better.}
+Replacing the discrete 3-class embedding with a continuous density descriptor derived
+from the frozen VGG16 frontend of CSRNet~\citep{csrnet} (conv1--conv4\_3, ImageNet-pretrained)
+followed by dilated convolutional backend layers yields NSS\,1.441, AUC-J\,0.821,
+CC\,0.520 ($\Delta$NSS$_\text{deb}$\,=\,$+0.416$) --- the highest \emph{standard} NSS
+of all variants, but below the discrete FiLM model's debiased gain ($+0.462$).
+Two findings emerge.  First, the continuous model achieves the best standard NSS
+because VGG16 features encode scene-level properties correlated with the shared
+centre-prior (blurriness, texture density, clutter), which boost fixation overlap
+but do not isolate crowd-type-specific saliency.
+Second, the debiased comparison reveals that the learned discrete embedding achieves
+\emph{cleaner density-discriminative separation}: the discrete embedding is explicitly
+supervised to distinguish the three density regimes, so its (γ, β) vectors encode
+regime-specific channel recalibration that survives centre-prior removal.
+The continuous VGG16 descriptor, by contrast, encodes a richer but less crowd-type-specific
+signal that correlates more with centre-prior-compatible scene statistics.
+This dissociation --- higher standard NSS, lower debiased NSS --- demonstrates that
+VGG16 scene features and crowd-type-specific conditioning are complementary rather than
+redundant, and motivates future work combining both in a dual-stream conditioning pathway.
 
 \mypar{RAFT optical flow is redundant.}
 Appending RAFT~\citep{raft} dense optical flow as a second input stream,
